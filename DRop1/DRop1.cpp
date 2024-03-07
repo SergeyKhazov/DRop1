@@ -1,7 +1,4 @@
-﻿// DRop1.cpp : Этот файл содержит функцию "main". Здесь начинается и заканчивается выполнение программы.
-//
-
-
+﻿
 #include <stdio.h>
 #include <math.h>
 #include<cmath>
@@ -28,7 +25,7 @@
 #define ESYM "e"
 #define FSYM "f"
 #endif
- /* Problem Constants */
+/* Problem Constants */
 #define H2O  0
 #define N2 1
 #define INTERFACE 2
@@ -47,11 +44,11 @@
 #define rho_H20 RCONST(0.98e-6)
 #define rho_N2 RCONST(4.0e-9)
 #define T0_H2O RCONST(300)
-#define T0_N2 RCONST(1000)
+#define T0_N2 RCONST(1500)
 #define T_vep RCONST(373)
 #define Ld RCONST(2258.2e3)
 #define R RCONST(8.31)
-#define p0 1.5
+#define p0 1.2
 #define V0 0
 #define tau RCONST(1.0e-4)
 #define tau0 RCONST(1.0e-4)
@@ -68,6 +65,7 @@
 typedef struct {
     realtype x[N - 1];
     realtype p;
+    double p_new;
     int inter;
     realtype t;
     realtype tout;
@@ -120,10 +118,9 @@ realtype rho(int phase, double T) {
         return rho_H20;
     }
     else {
-        return (P0 * M_N2 / R * T) * 1.e-9;;
+        return(P0 * M_N2 / (R * T)) * 1.e-9;;
     }
 }
-//(P0 * M_N2/ R * T) * 1.e-9;
 realtype Cp(int phase) {
     if (phase == 0) {
         return Cp_H20;
@@ -161,12 +158,16 @@ double Func_therm_inter_evoparation_P(double riM, double ri, double riP, double 
 }
 double Func_therm_evoparation_inter(double TvallM, double Tvall, double Tval, double Tvalr, double TvalrP, double dot_M, double ri, int phaseL, int phaseR, double h, double p) {
     return lambda(phaseL) * (p / (p + 1) * TvallM - (p + 1) / p * Tvall + Tval * (2 * p + 1) / ((p + 1) * p)) / h -
-        lambda(phaseR) * (((2 * p - 7) / ((p - 3) * (p - 4))) * Tval + ((p - 4) / (p - 3)) * Tvalr + ((p - 3) / (4 - p)) * TvalrP) / h - Ld * dot_M / (ri * ri);
+        lambda(phaseR) * (((2 * p - 7) / ((p - 3) * (p - 4))) * Tval + ((p - 4) / (p - 3)) * Tvalr + ((p - 3) / (4 - p)) * TvalrP) / h + Ld * dot_M / (ri * ri);
 }
 double Func_therm_evoparation(double riM, double ri, double riP, double Tvall, double Tval, double Tvalr, double dot_M, int phaseL, int phaseR) {
     return 1 / pow(ri, 2) * (2 / (riP - riM)) *
         (lambda(phaseR) * pow(0.5 * (riP + ri), 2) * (Tvalr - Tval) / (riP - ri) -
             lambda(phaseL) * pow(0.5 * (ri + riM), 2) * (Tval - Tvall) / (ri - riM)) - dot_M * Cp(phaseR) * (Tval - Tvall) / ((ri - riM) * pow(ri, 2));
+}
+
+double get_q(double Tval, double Tvalr, double TvalrP, int phaseR, double h, double p) {
+    return lambda(phaseR) * (((2 * p - 7) / ((p - 3) * (p - 4))) * Tval + ((p - 4) / (p - 3)) * Tvalr + ((p - 3) / (4 - p)) * TvalrP) / h;
 }
 double get_p(double t, double dot_M, double ri, double h, void* user_data, void* mem) {
     UserData data;
@@ -179,33 +180,29 @@ double get_p(double t, double dot_M, double ri, double h, void* user_data, void*
     double step;
     double tprev;
     int inter;
+    inter = data->inter;
     tprev = data->t;
     retval = IDAGetCurrentStep(mem, &step);
     check_retval(&retval, "IDAGetCurrentStep", 1);
     tout = data->tout;
-    p = data->p;
     dt = t - tprev;
-    V = -dot_M * 1 / (rho_H20 * ri * ri * h);
-    /* std::cout << "V = " << V << std::endl;
-     std::cout << "dot_M = " << dot_M << std::endl;*/
-     //V = -100;
+    p = data->p;
+    data->t = t;
     if (abs(dt) > 1.0e-17) {
-        p -= step * V;
-        tout += step;
-        /*  std::cout << std::fixed;
-          std::cout << std::setprecision(10);*/
-          /* std::cout << "t = " << t << "   p = " << p << std::endl;*/
-              /* std::cout << "t = " << t << "   p = " << p << std::endl;*/
-        if (p <= 1.0) {
-            data->step = true;
-            p += 1.0;
-            inter = data->inter - 1;
-            data->inter = inter;
-        }
+        data->p = data->p_new;
         data->t = t;
+        p = data->p;
     }
+    p = data->p;
+    V = dot_M * 1 / (rho_H20 * ri * ri * h);
+    p -= step * V;
+    if (abs(p - 1.0) < 0.001) {
+        p = 1.999;
+        inter = inter - 1;
+        data->inter = inter;
+    }
+    data->p_new = p;
     data->tout = tout;
-    data->p = p;
     return p;
 
 }
@@ -249,11 +246,9 @@ void out_T(double tout, double* Tval, void* user_data) {
             outputFile << ri << "," << T_vep << std::endl;
         }
         if (i > inter + 1) {
-            if (i != N_d)
-            {
-                ri = data->x[i - 1];
-                outputFile << ri << "," << Tval[i + 1] << std::endl;
-            }
+
+            ri = data->x[i - 1];
+            outputFile << ri << "," << Tval[i] << std::endl;
         }
 
         /* ri = data->x[i];
@@ -264,18 +259,36 @@ void out_T(double tout, double* Tval, void* user_data) {
 }
 void output(double tout, double* T, void* user_data) {
     std::string name;
+    double h, ri, p;
+    int inter;
     UserData data;
     data = (UserData)user_data;
+    p = data->p;
+    inter = data->inter;
+    h = data->x[inter - 1] - data->x[inter - 2];
     name = "out\\output" + std::to_string(tout) + ".dat";
     std::ofstream outputFile;
     outputFile.open(name);
     outputFile << "TITLE=\"" << "Graphics" << "\"" << std::endl;
-    outputFile << R"(VARIABLES= "x", "T")" << std::endl;
-    for (int i = 0; i < NEQ - 1; i++) {
-        outputFile << data->x[i] << " " << T[i] << std::endl;
-    }
-    outputFile.close();
+    outputFile << R"(VARIABLES= "r", "T")" << std::endl;
+    for (int i = 0; i < NEQ; i++) {
+        if (i < inter + 1) {
+            ri = data->x[i];
+            outputFile << ri << " " << T[i] << std::endl;
 
+        }
+
+        if (i == inter + 1) {
+            ri = data->x[inter - 1] + (p)*h;
+            outputFile << ri << " " << T[inter + 1] << std::endl;
+        }
+        if (i > inter + 1) {
+            ri = data->x[i - 1];
+            outputFile << ri << " " << T[i] << std::endl;
+        }
+        outputFile.close();
+
+    }
 }
 void out_T1(double tout, double* Tval, void* user_data) {
     std::string name;
@@ -465,15 +478,13 @@ int inital_T(double(&Init_T)[NEQ - 1], void* user_data) {
             iout++;
             //output(tout, Tval, data);
         }
-        if (iout % 5000 == 0) {
-            output(tout, Tval, data);
-        }
+        // output(tout, Tval, data);
         if (iout == 100000) break;
     }
     for (int i = 0; i < NEQ - 1; i++) {
         Init_T[i] = Tval[i];
     }
-    out_T1(tout, Tval, data);
+
     std::cout << "t =   " << tout << std::endl;
     printf("\n\n");
     retval = IDAPrintAllStats(mem, stdout, SUN_OUTPUTFORMAT_TABLE);
@@ -531,7 +542,9 @@ int heat_inter(double(&inter_T)[NEQ], void* user_data) {
             Tval[i] = T0_N2;
         }
     }
-    Tval[inter + 1] = (lambda(H2O) * T0_H2O + lambda(N2) * T0_N2) / (lambda(N2) + lambda(H2O));
+
+    Tval[inter + 1] = 370.61;
+    //(lambda(H2O) * T0_H2O + lambda(N2) * Tval[inter + 2]) / (lambda(N2) + lambda(H2O));
     rtol = RCONST(1.0e-3);
     atval = N_VGetArrayPointer(avtol);
     for (int i = 0; i < NEQ; i++) {
@@ -634,7 +647,9 @@ int heat_inter(double(&inter_T)[NEQ], void* user_data) {
             check_retval(&retvalr, "IDAGetRootInfo", 1);
             PrintRootInfo(rootsfound[0], rootsfound[1]);
         }
-        //outf << tout << "," << lambda(H2O) * (Tval[inter + 1] - Tval[inter])/(riP - riM) << std::endl;
+        if (iout % 1000 == 0) {
+            out_T(tout, Tval, data);
+        }
         if (retval == IDA_SUCCESS) {
             iout++;
             data->t = tout;
@@ -646,10 +661,11 @@ int heat_inter(double(&inter_T)[NEQ], void* user_data) {
     }
     for (int i = 0; i < NEQ; i++) {
         inter_T[i] = Tval[i];
+        //std::cout << "T "<<i <<" " << Tval[i] << std::endl;
     }
     //out_Inter(tout, Tval, data);
-    std::cout << "Ti " << Tval[N_d] << std::endl;
-    out_T(0.0, Tval, data);
+    std::cout << "Ti " << Tval[NEQ - 1] << std::endl;
+    out_T(tout, Tval, data);
     printf("\n\n");
     retval = IDAPrintAllStats(mem, stdout, SUN_OUTPUTFORMAT_TABLE);
 
@@ -794,7 +810,9 @@ int evaporation(double(&inter_T)[NEQ], void* user_data) {
     iout = 0; tout = tout1;
     data->tout = 0;
     std::ofstream outf;
-    outf.open("r(t).txt");
+    outf.open("dot_M.txt");
+    std::ofstream outp;
+    outp.open("r(t).txt");
     while (1) {
         //std::cout << "inter  " << data->x[inter - 1] + p * h << std::endl;
         p = data->p;
@@ -812,7 +830,8 @@ int evaporation(double(&inter_T)[NEQ], void* user_data) {
         //outf << tout << "," << lambda(H2O) * (Tval[inter + 1] - Tval[inter])/(riP - riM) << std::endl;
         if (retval == IDA_SUCCESS) {
             ri = data->x[inter - 1] + p * h;
-            outf << data->t << "," << ri * ri << std::endl;
+            outf << data->t << "," << Tval[N_d] << std::endl;
+            outp << data->t << "," << ri * ri << std::endl;
             iout++;
             data->t = tout;
             tout += tau;
@@ -826,6 +845,8 @@ int evaporation(double(&inter_T)[NEQ], void* user_data) {
     for (int i = 0; i < NEQ; i++) {
         inter_T[i] = Tval[i];
     }
+    outf.close();
+    outp.close();
     out_Inter(tout, Tval, data);
     out_T(tout, Tval, data);
     printf("\n\n");
@@ -847,7 +868,7 @@ int evaporation(double(&inter_T)[NEQ], void* user_data) {
 int main(void)
 {
     void* mem;
-    realtype T[NEQ], initT[NEQ - 1];
+    realtype T[NEQ];
     realtype t0, tout1, tout, tret, h, ri, riM, riP, v;
     int iout, retval, retvalr;
     int inter = N_d - 1;
@@ -872,6 +893,7 @@ int main(void)
         }
     }
     data->p = p;
+    data->p_new = p0;
     data->step = false;
     data->inter = inter;
     data->t = 0.0;
@@ -935,7 +957,7 @@ int resHEAT(realtype tres, N_Vector T, N_Vector Tp, N_Vector rr, void* user_data
     //std::cout << rval[inter] << "  inter - 1" << std::endl;
     /*rval[inter - 1] = Func_therm_inter(Tval[inter - 3], Tval[inter - 2], Tval[inter], Tval[inter + 2], Tval[inter + 3], H2O, N2, h, p);*/
     rval[inter + 1] = Func_therm_inter(Tval[inter - 2], Tval[inter - 1], Tval[inter + 1], Tval[inter + 3], Tval[inter + 4], H2O, N2, h, p);
-    //std::cout << rval[inter + 1] << std::endl;
+    // std::cout << rval[inter + 1] <<"  " << p << std::endl;
     ri = data->x[inter + 1];
     riP = data->x[inter + 2];
     riM = data->x[inter - 1] + p * h;
@@ -1013,7 +1035,7 @@ int resEVEPORATION(realtype tres, N_Vector T, N_Vector Tp, N_Vector rr, void* us
     realtype h = L / (N - 1);
     double dot_M;
     realtype ri, riP, riM, p;
-    realtype tprev;
+
     UserData data;
     SUNContext ctx;
     int retval;
@@ -1023,9 +1045,12 @@ int resEVEPORATION(realtype tres, N_Vector T, N_Vector Tp, N_Vector rr, void* us
     Tpval = N_VGetArrayPointer(Tp);
     rval = N_VGetArrayPointer(rr);
     mem = data->mem;
+    inter = data->inter;
     p = data->p;
-    /*std::cout <<"t = " << tres << std::endl;*/
-    /*std::cout << tres << "  tres" << std::endl;*/
+    h = data->x[inter] - data->x[inter - 1];
+    ri = data->x[inter - 1] + p * h;
+    dot_M = Tval[N_d];
+    p = get_p(tres, dot_M, ri, h, data, mem);
     ri = data->x[0];
     riM = 0;
     riP = data->x[1];
@@ -1042,15 +1067,15 @@ int resEVEPORATION(realtype tres, N_Vector T, N_Vector Tp, N_Vector rr, void* us
         h = data->x[inter] - data->x[inter - 1];
         ri = data->x[inter - 1] + p * h;
         dot_M = Tval[N_d];
-        p = get_p(tres, dot_M, ri, h, data, mem);
         riP = data->x[inter - 1] + p * h;
         riM = data->x[inter - 1];
         ri = data->x[inter];
         rval[inter] = Func_therm_inter_M(riM, ri, riP, Tval[inter - 2], Tval[inter - 1], Tval[inter], T_vep, H2O, H2O, h, p) - Cp(H2O) * rho(H2O, T_vep) * Tpval[inter];
         rval[N_d] = Func_therm_evoparation_inter(Tval[inter - 2], Tval[inter - 1], T_vep, Tval[inter + 3], Tval[inter + 4], dot_M, ri, H2O, N2, h, p);
+        std::cout << " rval[Nd] = " << rval[N_d] << " p = " << p << std::endl;
         //std::cout << "p = " << p << std::endl;
         //std::cout << "Nd_rval = " << rval[N_d] << std::endl;
-        std::cout << " rval[Nd] = " << rval[N_d] << " p = " << p << std::endl;
+        //std::cout << " rval[Nd] = " << rval[N_d] << " p = " << p << std::endl;
         ri = data->x[inter + 1];
         riP = data->x[inter + 2];
         riM = data->x[inter - 1] + p * h;
@@ -1085,11 +1110,6 @@ int resEVEPORATION(realtype tres, N_Vector T, N_Vector Tp, N_Vector rr, void* us
         h = data->x[inter] - data->x[inter - 1];
         ri = data->x[inter - 1] + p * h;
         dot_M = Tval[N_d];
-        // std::cout << dot_M << " = M" << std::endl;
-        p = get_p(tres, dot_M, ri, h, data, mem);//непонятно что там с p
-        /* if (p > 1.5) {
-             std::cout << " rval[Nd] = " << rval[N_d] << " p = " << p << std::endl;
-         }*/
         riP = data->x[inter - 1] + p * h;
         riM = data->x[inter - 1];
         ri = data->x[inter];
@@ -1097,9 +1117,10 @@ int resEVEPORATION(realtype tres, N_Vector T, N_Vector Tp, N_Vector rr, void* us
         riM = data->x[inter - 1] + p * h;
         ri = data->x[inter + 1];
         riP = data->x[inter + 2];
-        rval[inter] = Func_therm_inter_evoparation_P(riM, ri, riP, T_vep, Tval[inter], Tval[inter + 2], Tval[inter + 3], dot_M, N2, N2, h, p) - Tpval[inter] * Cp(N2) * rho(N2, Tval[inter]);
+        rval[inter] = Func_therm_inter_evoparation_P(riM, ri, riP, T_vep, Tval[inter], Tval[inter + 3], Tval[inter + 4], dot_M, N2, N2, h, p) - Tpval[inter] * Cp(N2) * rho(N2, Tval[inter]);
         ri = data->x[inter - 1] + p * h;
-        rval[N_d] = Func_therm_evoparation_inter(Tval[inter - 3], Tval[inter - 2], T_vep, Tval[inter + 2], Tval[inter + 3], dot_M, ri, H2O, N2, h, p);
+        rval[N_d] = Func_therm_evoparation_inter(Tval[inter - 3], Tval[inter - 2], T_vep, Tval[inter + 3], Tval[inter + 4], dot_M, ri, H2O, N2, h, p);
+        std::cout << " rval[Nd] = " << rval[N_d] << " p = " << p << std::endl;
         rval[N_d + 1] = Func_therm_evoparation(riM, ri, riP, Tval[N_d - 1], Tval[N_d + 1], Tval[N_d + 2], dot_M, N2, N2);
         // std::cout << "dot_M = " << dot_M << std::endl;
         ri = data->x[inter + 1];
@@ -1337,15 +1358,3 @@ static int check_ans(N_Vector y, realtype t, realtype rtol, N_Vector atol)
     return(passfail);
 }
 
-
-
-// Запуск программы: CTRL+F5 или меню "Отладка" > "Запуск без отладки"
-// Отладка программы: F5 или меню "Отладка" > "Запустить отладку"
-
-// Советы по началу работы 
-//   1. В окне обозревателя решений можно добавлять файлы и управлять ими.
-//   2. В окне Team Explorer можно подключиться к системе управления версиями.
-//   3. В окне "Выходные данные" можно просматривать выходные данные сборки и другие сообщения.
-//   4. В окне "Список ошибок" можно просматривать ошибки.
-//   5. Последовательно выберите пункты меню "Проект" > "Добавить новый элемент", чтобы создать файлы кода, или "Проект" > "Добавить существующий элемент", чтобы добавить в проект существующие файлы кода.
-//   6. Чтобы снова открыть этот проект позже, выберите пункты меню "Файл" > "Открыть" > "Проект" и выберите SLN-файл.
