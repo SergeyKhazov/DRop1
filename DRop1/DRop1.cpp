@@ -30,7 +30,7 @@
 #define N2 1
 #define INTERFACE 2
 #define NEQ   551
-#define TOUT  0.2
+#define TOUT  5.0
 #define WIDTH 10
 #define N RCONST(NEQ)
 #define N_d 50
@@ -166,8 +166,11 @@ double Func_therm_evoparation(double riM, double ri, double riP, double Tvall, d
             lambda(phaseL) * pow(0.5 * (ri + riM), 2) * (Tval - Tvall) / (ri - riM)) - dot_M * Cp(phaseR) * (Tval - Tvall) / ((ri - riM) * pow(ri, 2));
 }
 
-double get_q(double Tval, double Tvalr, double TvalrP, int phaseR, double h, double p) {
+double get_Qg(double Tval, double Tvalr, double TvalrP, int phaseR, double h, double p) {
     return lambda(phaseR) * (((2 * p - 7) / ((p - 3) * (p - 4))) * Tval + ((p - 4) / (p - 3)) * Tvalr + ((p - 3) / (4 - p)) * TvalrP) / h;
+}
+double get_Qd(double TvallM, double Tvall, double Tval, int phaseL, double h, double p) {
+    return lambda(phaseL) * (p / (p + 1) * TvallM - (p + 1) / p * Tvall + Tval * (2 * p + 1) / ((p + 1) * p)) / h;
 }
 double get_p(double t, double dot_M, double ri, double h, void* user_data, void* mem) {
     UserData data;
@@ -180,29 +183,25 @@ double get_p(double t, double dot_M, double ri, double h, void* user_data, void*
     double step;
     double tprev;
     int inter;
-    inter = data->inter;
     tprev = data->t;
     retval = IDAGetCurrentStep(mem, &step);
     check_retval(&retval, "IDAGetCurrentStep", 1);
     tout = data->tout;
+    p = data->p;
     dt = t - tprev;
-    p = data->p;
-    data->t = t;
-    if (abs(dt) > 1.0e-17) {
-        data->p = data->p_new;
-        data->t = t;
-        p = data->p;
-    }
-    p = data->p;
     V = dot_M * 1 / (rho_H20 * ri * ri * h);
-    p -= step * V;
-    if (abs(p - 1.0) < 0.001) {
-        p = 1.999;
-        inter = inter - 1;
-        data->inter = inter;
+    if (abs(dt) > 1.0e-17) {
+        p -= step * V;
+        tout += step;
+        if ((p - 1.0) <= 0.001) {
+            p = 1.999;
+            inter = data->inter - 1;
+            data->inter = inter;
+        }
+        data->t = t;
+        data->p = p;
     }
-    data->p_new = p;
-    data->tout = tout;
+    //std::cout <<" p = " << p << std::endl;
     return p;
 
 }
@@ -231,29 +230,9 @@ void out_T(double tout, double* Tval, void* user_data) {
     name = "output" + std::to_string(tout) + std::to_string(N - 1) + ".txt";
     std::ofstream outputFile;
     outputFile.open(name);
-    for (int i = 0; i < NEQ; i++) {
-        if (i < inter + 1) {
-            ri = data->x[i];
-            outputFile << ri << "," << Tval[i] << std::endl;
-        }
-        /*else if (i == inter + 1) {
-            ri = data->x[inter - 1] + (p)*h;
-            outputFile << ri << "," << Tval[i] << std::endl;
-            i++;
-        }*/
-        if (i == inter + 1) {
-            ri = data->x[inter - 1] + (p)*h;
-            outputFile << ri << "," << T_vep << std::endl;
-        }
-        if (i > inter + 1) {
-
-            ri = data->x[i - 1];
-            outputFile << ri << "," << Tval[i] << std::endl;
-        }
-
-        /* ri = data->x[i];
-         outputFile << ri << "," << Tval[i + 1] << std::endl;
-         std::cout<< ri << "," << Tval[i + 1] << std::endl;*/
+    for (int i = 0; i < NEQ - 1; i++) {
+        ri = data->x[i];
+        outputFile << ri << "," << Tval[i] << std::endl;
     }
     outputFile.close();
 }
@@ -718,7 +697,7 @@ int evaporation(double(&inter_T)[NEQ], void* user_data) {
     for (int i = 0; i < NEQ; i++) {
         Tval[i] = inter_T[i];
     }
-    Tval[inter + 1] = 0.0;
+    Tval[NEQ - 1] = 0.0;
     rtol = RCONST(1.0e-2);
     atval = N_VGetArrayPointer(avtol);
     for (int i = 0; i < NEQ; i++) {
@@ -740,24 +719,24 @@ int evaporation(double(&inter_T)[NEQ], void* user_data) {
     riP = data->x[inter - 1] + p * h;
     riM = data->x[inter - 1];
     ri = data->x[inter];
-    Tpval[inter] = Func_therm_inter_M(riM, ri, riP, Tval[inter - 3], Tval[inter - 2], Tval[inter - 1], Tval[inter + 1], N2, N2, h, p) / Cp(H2O) / rho(H2O, Tval[inter]);
+    Tpval[inter] = Func_therm_inter_M(riM, ri, riP, Tval[inter - 3], Tval[inter - 2], Tval[inter - 1], T_vep, N2, N2, h, p) / Cp(H2O) / rho(H2O, Tval[inter]);
     riM = data->x[inter - 1];
-    Tpval[inter + 1] = 0;// - функция справа от производных 
     ri = data->x[inter + 1];
     riP = data->x[inter + 2];
     riM = data->x[inter - 1] + p * h;
-    Tpval[inter + 2] = Func_therm_inter_P(riM, ri, riP, Tval[inter + 1], Tval[inter + 2], Tval[inter + 3], Tval[inter + 4], N2, N2, h, p) / Cp(N2) / rho(N2, Tval[inter + 1]);
+    Tpval[inter + 1] = Func_therm_inter_P(riM, ri, riP, T_vep, Tval[inter + 1], Tval[inter + 2], Tval[inter + 3], N2, N2, h, p) / Cp(N2) / rho(N2, Tval[inter + 1]);
     for (int i = inter + 2; i < NEQ - 1; i++) {
-        ri = data->x[i - 1];
-        riP = data->x[i - 1] + h;
-        riM = data->x[i - 2];
+        ri = data->x[i];
+        riP = data->x[i] + h;
+        riM = data->x[i - 1];
         Tpval[i] = Func_therm(riM, ri, riP, Tval[i - 1], Tval[i], Tval[i + 1], N2, N2) / Cp(N2) / rho(N2, Tval[i]);// - функция справа от производных
     }
     ri = data->x[NEQ - 2];
     riP = data->x[NEQ - 2] + h;
     riM = data->x[NEQ - 3];
-    Tpval[NEQ - 1] = Func_therm(riM, ri, riP, Tval[NEQ - 2], Tval[NEQ - 1], Tval[NEQ - 1], N2, N2) / Cp(N2) / rho(N2, Tval[NEQ - 1]);
+    Tpval[NEQ - 2] = Func_therm(riM, ri, riP, Tval[NEQ - 2], Tval[NEQ - 1], Tval[NEQ - 1], N2, N2) / Cp(N2) / rho(N2, Tval[NEQ - 2]);
     /* Integration limits */
+    Tpval[NEQ - 1] = 0.0;
     t0 = ZERO;
     tout1 = tau;
 
@@ -810,9 +789,9 @@ int evaporation(double(&inter_T)[NEQ], void* user_data) {
     iout = 0; tout = tout1;
     data->tout = 0;
     std::ofstream outf;
-    outf.open("dot_M.txt");
+    outf.open("Qd.txt");
     std::ofstream outp;
-    outp.open("r(t).txt");
+    outp.open("Qg.txt");
     while (1) {
         //std::cout << "inter  " << data->x[inter - 1] + p * h << std::endl;
         p = data->p;
@@ -830,8 +809,8 @@ int evaporation(double(&inter_T)[NEQ], void* user_data) {
         //outf << tout << "," << lambda(H2O) * (Tval[inter + 1] - Tval[inter])/(riP - riM) << std::endl;
         if (retval == IDA_SUCCESS) {
             ri = data->x[inter - 1] + p * h;
-            outf << data->t << "," << Tval[N_d] << std::endl;
-            outp << data->t << "," << ri * ri << std::endl;
+            outf << data->t << "," << get_Qd(Tval[inter - 2], Tval[inter - 1], T_vep, H2O, h, p) / (M_PI * ri * ri * 4.0) << std::endl;
+            outp << data->t << "," << get_Qg(T_vep, Tval[inter + 2], Tval[inter + 3], N2, h, p) / (M_PI * ri * ri * 4.0) << std::endl;
             iout++;
             data->t = tout;
             tout += tau;
@@ -1049,140 +1028,44 @@ int resEVEPORATION(realtype tres, N_Vector T, N_Vector Tp, N_Vector rr, void* us
     p = data->p;
     h = data->x[inter] - data->x[inter - 1];
     ri = data->x[inter - 1] + p * h;
-    dot_M = Tval[N_d];
+    dot_M = Tval[NEQ - 1];
     p = get_p(tres, dot_M, ri, h, data, mem);
     ri = data->x[0];
     riM = 0;
     riP = data->x[1];
     inter = data->inter;
     rval[0] = Func_therm(riM, ri, riP, Tval[0], Tval[0], Tval[1], H2O, H2O) - Cp(H2O) * rho(H2O, Tval[0]) * Tpval[0];
-    if (inter == N_d - 1) {
-        for (int i = 1; i < inter; i++) {
-            ri = data->x[i];
-            riP = data->x[i + 1];
-            riM = data->x[i - 1];
-            rval[i] = Func_therm(riM, ri, riP, Tval[i - 1], Tval[i], Tval[i + 1], H2O, H2O) - Cp(H2O) * rho(H2O, Tval[i]) * Tpval[i];
-            //std::cout<<"rval[i] = " << rval[i] <<"  " << i << std::endl;
-        }
-        h = data->x[inter] - data->x[inter - 1];
-        ri = data->x[inter - 1] + p * h;
-        dot_M = Tval[N_d];
-        riP = data->x[inter - 1] + p * h;
-        riM = data->x[inter - 1];
-        ri = data->x[inter];
-        rval[inter] = Func_therm_inter_M(riM, ri, riP, Tval[inter - 2], Tval[inter - 1], Tval[inter], T_vep, H2O, H2O, h, p) - Cp(H2O) * rho(H2O, T_vep) * Tpval[inter];
-        rval[N_d] = Func_therm_evoparation_inter(Tval[inter - 2], Tval[inter - 1], T_vep, Tval[inter + 3], Tval[inter + 4], dot_M, ri, H2O, N2, h, p);
-        std::cout << " rval[Nd] = " << rval[N_d] << " p = " << p << std::endl;
-        //std::cout << "p = " << p << std::endl;
-        //std::cout << "Nd_rval = " << rval[N_d] << std::endl;
-        //std::cout << " rval[Nd] = " << rval[N_d] << " p = " << p << std::endl;
-        ri = data->x[inter + 1];
-        riP = data->x[inter + 2];
-        riM = data->x[inter - 1] + p * h;
-        /* std::cout << "ri = " << riM << std::endl;*/
-        rval[inter + 2] = Func_therm_inter_evoparation_P(riM, ri, riP, T_vep, Tval[inter + 2], Tval[inter + 3], Tval[inter + 4], dot_M, N2, N2, h, p) - Tpval[inter + 2] * Cp(N2) * rho(N2, Tval[inter + 2]);
-        for (int i = inter + 3; i < NEQ - 1; i++) {
-            if (i != N_d) {
-                ri = data->x[i - 1];
-                riP = data->x[i - 1] + h;
-                riM = data->x[i - 2];
-                rval[i] = Func_therm_evoparation(riM, ri, riP, Tval[i - 1], Tval[i], Tval[i + 1], dot_M, N2, N2) - Cp(N2) * rho(N2, Tval[i]) * Tpval[i];
-            }
-        }
-        ri = data->x[N - 2];
-        riP = data->x[N - 2] + h;
-        riM = data->x[N - 3];
-        rval[NEQ - 1] = Func_therm_evoparation(riM, ri, riP, Tval[NEQ - 2], Tval[NEQ - 1], Tval[NEQ - 1], dot_M, N2, N2) - Cp(N2) * rho(N2, Tval[NEQ - 1]) * Tpval[NEQ - 1];
-
-        return 0;
+    for (int i = 1; i < inter; i++) {
+        ri = data->x[i];
+        riP = data->x[i + 1];
+        riM = data->x[i - 1];
+        rval[i] = Func_therm(riM, ri, riP, Tval[i - 1], Tval[i], Tval[i + 1], H2O, H2O) - Cp(H2O) * rho(H2O, Tval[i]) * Tpval[i];
     }
-    if (inter == N_d - 2) {
-        for (int i = 1; i < inter; i++) {
-            ri = data->x[i];
-            riP = data->x[i + 1];
-            riM = data->x[i - 1];
-            rval[i] = Func_therm(riM, ri, riP, Tval[i - 1], Tval[i], Tval[i + 1], H2O, H2O) - Cp(H2O) * rho(H2O, Tval[i]) * Tpval[i];
-            //std::cout<<"rval[i] = " << rval[i] <<"  " << i << std::endl;
-        }
-
-        /* p = data->p;*/
-        // std::cout << p << " = p" << std::endl;
-        h = data->x[inter] - data->x[inter - 1];
-        ri = data->x[inter - 1] + p * h;
-        dot_M = Tval[N_d];
-        riP = data->x[inter - 1] + p * h;
-        riM = data->x[inter - 1];
-        ri = data->x[inter];
-        rval[inter - 1] = Func_therm_inter_M(riM, ri, riP, Tval[inter - 3], Tval[inter - 2], Tval[inter - 1], T_vep, H2O, H2O, h, p) - Cp(H2O) * rho(H2O, Tval[inter - 1]) * Tpval[inter - 1];
-        riM = data->x[inter - 1] + p * h;
-        ri = data->x[inter + 1];
-        riP = data->x[inter + 2];
-        rval[inter] = Func_therm_inter_evoparation_P(riM, ri, riP, T_vep, Tval[inter], Tval[inter + 3], Tval[inter + 4], dot_M, N2, N2, h, p) - Tpval[inter] * Cp(N2) * rho(N2, Tval[inter]);
-        ri = data->x[inter - 1] + p * h;
-        rval[N_d] = Func_therm_evoparation_inter(Tval[inter - 3], Tval[inter - 2], T_vep, Tval[inter + 3], Tval[inter + 4], dot_M, ri, H2O, N2, h, p);
-        std::cout << " rval[Nd] = " << rval[N_d] << " p = " << p << std::endl;
-        rval[N_d + 1] = Func_therm_evoparation(riM, ri, riP, Tval[N_d - 1], Tval[N_d + 1], Tval[N_d + 2], dot_M, N2, N2);
-        // std::cout << "dot_M = " << dot_M << std::endl;
-        ri = data->x[inter + 1];
-        riP = data->x[inter + 2];
-        riM = data->x[inter - 1] + p * h;
-        /* std::cout << "ri = " << riM << std::endl;*/
-        for (int i = inter + 1; i < NEQ - 1; i++) {
-            if ((i != N_d) && (i != (N_d + 1))) {
-                ri = data->x[i - 1];
-                riP = data->x[i - 1] + h;
-                riM = data->x[i - 2];
-                rval[i] = Func_therm_evoparation(riM, ri, riP, Tval[i - 1], Tval[i], Tval[i + 1], dot_M, N2, N2) - Cp(N2) * rho(N2, Tval[i]) * Tpval[i];
-            }
-        }
-        ri = data->x[N - 2];
-        riP = data->x[N - 2] + h;
-        riM = data->x[N - 3];
-        rval[NEQ - 1] = Func_therm_evoparation(riM, ri, riP, Tval[NEQ - 2], Tval[NEQ - 1], Tval[NEQ - 1], dot_M, N2, N2) - Cp(N2) * rho(N2, Tval[NEQ - 1]) * Tpval[NEQ - 1];
-
-        return 0;
-        if (inter < N_d - 2) {
-            for (int i = 1; i < inter; i++) {
-                ri = data->x[i];
-                riP = data->x[i + 1];
-                riM = data->x[i - 1];
-                rval[i] = Func_therm(riM, ri, riP, Tval[i - 1], Tval[i], Tval[i + 1], H2O, H2O) - Cp(H2O) * rho(H2O, Tval[i]) * Tpval[i];
-            }
-            h = data->x[inter] - data->x[inter - 1];
-            ri = data->x[inter - 1] + p * h;
-            dot_M = Tval[N_d];
-            p = get_p(tres, dot_M, ri, h, data, mem);
-            riP = data->x[inter - 1] + p * h;
-            riM = data->x[inter - 1];
-            ri = data->x[inter];
-            rval[inter - 1] = Func_therm_inter_M(riM, ri, riP, Tval[inter - 3], Tval[inter - 2], Tval[inter - 1], T_vep, H2O, H2O, h, p) - Cp(H2O) * rho(H2O, Tval[inter - 1]) * Tpval[inter - 1];
-            riM = data->x[inter - 1] + p * h;
-            ri = data->x[inter + 1];
-            riP = data->x[inter + 2];
-            rval[inter] = Func_therm_inter_evoparation_P(riM, ri, riP, T_vep, Tval[inter], Tval[inter + 2], Tval[inter + 3], dot_M, N2, N2, h, p) - Tpval[inter] * Cp(N2) * rho(N2, Tval[inter]);
-            ri = data->x[inter - 1] + p * h;
-            rval[N_d - 1] = Func_therm_evoparation(riM, ri, riP, Tval[N_d - 2], Tval[N_d - 1], Tval[N_d + 1], dot_M, N2, N2);
-            rval[N_d] = Func_therm_evoparation_inter(Tval[inter - 3], Tval[inter - 2], T_vep, Tval[inter + 2], Tval[inter + 3], dot_M, ri, H2O, N2, h, p);
-            rval[N_d + 1] = Func_therm_evoparation(riM, ri, riP, Tval[N_d - 1], Tval[N_d + 1], Tval[N_d + 2], dot_M, N2, N2);
-            ri = data->x[inter + 1];
-            riP = data->x[inter + 2];
-            riM = data->x[inter - 1] + p * h;
-            for (int i = inter + 1; i < NEQ - 1; i++) {
-                if ((i != N_d) && (i != (N_d + 1)) && (i != (N_d - 1))) {
-                    ri = data->x[i - 1];
-                    riP = data->x[i - 1] + h;
-                    riM = data->x[i - 2];
-                    rval[i] = Func_therm_evoparation(riM, ri, riP, Tval[i - 1], Tval[i], Tval[i + 1], dot_M, N2, N2) - Cp(N2) * rho(N2, Tval[i]) * Tpval[i];
-                }
-            }
-            ri = data->x[N - 2];
-            riP = data->x[N - 2] + h;
-            riM = data->x[N - 3];
-            rval[NEQ - 1] = Func_therm_evoparation(riM, ri, riP, Tval[NEQ - 2], Tval[NEQ - 1], Tval[NEQ - 1], dot_M, N2, N2) - Cp(N2) * rho(N2, Tval[NEQ - 1]) * Tpval[NEQ - 1];
-
-            return 0;
-        }
+    h = data->x[inter] - data->x[inter - 1];
+    ri = data->x[inter - 1] + p * h;
+    p = get_p(tres, dot_M, ri, h, data, mem);
+    riP = data->x[inter - 1] + p * h;
+    riM = data->x[inter - 1];
+    ri = data->x[inter];
+    rval[inter] = Func_therm_inter_M(riM, ri, riP, Tval[inter - 3], Tval[inter - 2], Tval[inter - 1], T_vep, H2O, H2O, h, p) - Cp(H2O) * rho(H2O, Tval[inter]) * Tpval[inter];
+    riM = data->x[inter - 1] + p * h;
+    ri = data->x[inter + 1];
+    riP = data->x[inter + 2];
+    rval[inter + 1] = Func_therm_inter_evoparation_P(riM, ri, riP, T_vep, Tval[inter + 1], Tval[inter + 2], Tval[inter + 3], dot_M, N2, N2, h, p) - Tpval[inter + 1] * Cp(N2) * rho(N2, Tval[inter + 1]);
+    for (int i = inter + 2; i < NEQ - 2; i++) {
+        ri = data->x[i];
+        riP = data->x[i] + h;
+        riM = data->x[i - 1];
+        rval[i] = Func_therm_evoparation(riM, ri, riP, Tval[i - 1], Tval[i], Tval[i + 1], dot_M, N2, N2) - Cp(N2) * rho(N2, Tval[i]) * Tpval[i];
     }
+    ri = data->x[N - 2];
+    riP = data->x[N - 2] + h;
+    riM = data->x[N - 3];
+    rval[NEQ - 2] = Func_therm_evoparation(riM, ri, riP, Tval[NEQ - 3], Tval[NEQ - 2], Tval[NEQ - 2], dot_M, N2, N2) - Cp(N2) * rho(N2, Tval[NEQ - 2]) * Tpval[NEQ - 2];
+    ri = data->x[inter - 1] + p * h;
+    rval[NEQ - 1] = Func_therm_evoparation_inter(Tval[inter - 2], Tval[inter - 1], T_vep, Tval[inter + 2], Tval[inter + 3], dot_M, ri, H2O, N2, h, p);
+    // std::cout << dot_M << " = M " << std::endl;
+    return 0;
 }
 /*
  * Root function routine. Compute functions g_i(t,y) for i = 0,1.
